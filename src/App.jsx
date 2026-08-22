@@ -12,8 +12,9 @@ const STATUS_COLORS = {
 }
 
 const CHANGELOG = [
+  { date: '2026-08-23', text: 'Added multi-device account recovery via recovery codes.' },
   { date: '2026-08-23', text: 'Added user list, event creator visibility, admin moderation, and this changelog.' },
-  { date: '2026-08-22', text: 'Switched events to all-day only, added RSVP (Attending / Can\'t go) with color-coded status.' },
+  { date: '2026-08-22', text: "Switched events to all-day only, added RSVP (Attending / Can't go) with color-coded status." },
   { date: '2026-08-22', text: 'Removed group password gate; added anonymous sign-in with editable usernames.' },
   { date: '2026-08-22', text: 'Added background video widget (Subway Surfers / Family Guy / Rick and Morty).' },
   { date: '2026-08-22', text: 'Initial launch: shared calendar with FullCalendar, Supabase, and live sync.' },
@@ -25,6 +26,13 @@ export default function App() {
   const [usernameInput, setUsernameInput] = useState('')
   const [usernameError, setUsernameError] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
+
+  const [showRecovery, setShowRecovery] = useState(false)
+  const [recoveryInput, setRecoveryInput] = useState('')
+  const [recoveryError, setRecoveryError] = useState(null)
+
+  const [newRecoveryCode, setNewRecoveryCode] = useState(null)
+  const [showNewCodeModal, setShowNewCodeModal] = useState(false)
 
   const [events, setEvents] = useState([])
   const [profiles, setProfiles] = useState([])
@@ -41,6 +49,7 @@ export default function App() {
 
   const [usersModalOpen, setUsersModalOpen] = useState(false)
   const [changelogOpen, setChangelogOpen] = useState(false)
+  const [myCodeModalOpen, setMyCodeModalOpen] = useState(false)
 
   useEffect(() => {
     const init = async () => {
@@ -67,7 +76,7 @@ export default function App() {
     const { data, error: profileError } = await supabase
       .from('profiles')
       .select('*')
-      .eq('id', session.user.id)
+      .contains('auth_user_ids', [session.user.id])
       .maybeSingle()
 
     if (profileError) setError(profileError.message)
@@ -89,7 +98,7 @@ export default function App() {
 
     const { data, error: insertError } = await supabase
       .from('profiles')
-      .insert({ id: session.user.id, username: trimmed })
+      .insert({ id: session.user.id, username: trimmed, auth_user_ids: [session.user.id] })
       .select()
       .single()
 
@@ -98,6 +107,28 @@ export default function App() {
       return
     }
     setProfile(data)
+    setNewRecoveryCode(data.recovery_code)
+    setShowNewCodeModal(true)
+  }
+
+  const handleLinkDevice = async (e) => {
+    e.preventDefault()
+    setRecoveryError(null)
+    const trimmed = recoveryInput.trim()
+    if (!trimmed) {
+      setRecoveryError('Enter your recovery code.')
+      return
+    }
+
+    const { data, error: rpcError } = await supabase.rpc('link_device_by_code', { input_code: trimmed })
+
+    if (rpcError) {
+      setRecoveryError(rpcError.message.includes('Invalid') ? 'Invalid recovery code.' : rpcError.message)
+      return
+    }
+
+    setProfile(data)
+    setShowRecovery(false)
   }
 
   const handleRename = async (newUsername) => {
@@ -107,7 +138,7 @@ export default function App() {
     const { data, error: updateError } = await supabase
       .from('profiles')
       .update({ username: trimmed })
-      .eq('id', session.user.id)
+      .eq('id', profile.id)
       .select()
       .single()
 
@@ -177,7 +208,7 @@ export default function App() {
     const { error: insertError } = await supabase.from('events').insert({
       title: newTitle.trim(),
       event_date: createDate,
-      user_id: session.user.id,
+      user_id: profile.id,
     })
 
     if (insertError) {
@@ -190,7 +221,7 @@ export default function App() {
     fetchAll()
   }
 
-  const myRsvpFor = (eventId) => rsvps.find((r) => r.event_id === eventId && r.user_id === session?.user?.id)
+  const myRsvpFor = (eventId) => rsvps.find((r) => r.event_id === eventId && r.user_id === profile?.id)
 
   const statusFor = (eventId) => {
     const mine = myRsvpFor(eventId)
@@ -229,7 +260,7 @@ export default function App() {
     } else {
       const { error: insertError } = await supabase
         .from('rsvps')
-        .insert({ event_id: selectedEvent.id, user_id: session.user.id, status })
+        .insert({ event_id: selectedEvent.id, user_id: profile.id, status })
       if (insertError) setError(insertError.message)
     }
     fetchAll()
@@ -247,7 +278,7 @@ export default function App() {
 
   const handleDeleteEvent = async () => {
     if (!selectedEvent) return
-    const isOwner = session && selectedEvent.user_id === session.user.id
+    const isOwner = profile && selectedEvent.user_id === profile.id
     const isAdmin = profile?.is_admin
     if (!isOwner && !isAdmin) return
 
@@ -290,31 +321,92 @@ export default function App() {
   if (session && !profile) {
     return (
       <div className="min-h-screen bg-stone-100 flex items-center justify-center p-4">
-        <form onSubmit={handleCreateProfile} className="bg-white rounded-xl shadow-sm border border-stone-200 p-8 w-full max-w-sm">
-          <h1 className="text-xl font-bold text-stone-800 mb-1">Pick a username</h1>
-          <p className="text-sm text-stone-500 mb-6">This is how your friends will see you. You can change it anytime.</p>
-          <input
-            type="text"
-            required
-            autoFocus
-            maxLength={24}
-            value={usernameInput}
-            onChange={(e) => setUsernameInput(e.target.value)}
-            placeholder="e.g. Sam"
-            className="w-full border border-stone-300 rounded-md px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-emerald-700"
-          />
-          {usernameError && <p className="text-sm text-red-600 mb-3">{usernameError}</p>}
-          <button type="submit" className="w-full bg-emerald-800 text-white text-sm font-medium py-2 rounded-md hover:bg-emerald-900 transition">
-            Continue
+        <div className="bg-white rounded-xl shadow-sm border border-stone-200 p-8 w-full max-w-sm">
+          {!showRecovery ? (
+            <>
+              <h1 className="text-xl font-bold text-stone-800 mb-1">Pick a username</h1>
+              <p className="text-sm text-stone-500 mb-6">This is how your friends will see you. You can change it anytime.</p>
+              <form onSubmit={handleCreateProfile}>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  maxLength={24}
+                  value={usernameInput}
+                  onChange={(e) => setUsernameInput(e.target.value)}
+                  placeholder="Enter a username"
+                  className="w-full border border-stone-300 rounded-md px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-emerald-700"
+                />
+                {usernameError && <p className="text-sm text-red-600 mb-3">{usernameError}</p>}
+                <button type="submit" className="w-full bg-emerald-800 text-white text-sm font-medium py-2 rounded-md hover:bg-emerald-900 transition">
+                  Continue
+                </button>
+              </form>
+              <button
+                onClick={() => { setShowRecovery(true); setRecoveryError(null) }}
+                className="w-full text-center text-xs text-stone-500 hover:text-stone-700 underline mt-4 transition"
+              >
+                Already have an account? Enter your recovery code
+              </button>
+            </>
+          ) : (
+            <>
+              <h1 className="text-xl font-bold text-stone-800 mb-1">Enter recovery code</h1>
+              <p className="text-sm text-stone-500 mb-6">Use the code you saved when you first created your account.</p>
+              <form onSubmit={handleLinkDevice}>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  maxLength={10}
+                  value={recoveryInput}
+                  onChange={(e) => setRecoveryInput(e.target.value.toUpperCase())}
+                  placeholder="Enter your code"
+                  className="w-full border border-stone-300 rounded-md px-3 py-2 text-sm mb-3 font-mono tracking-wider focus:outline-none focus:ring-2 focus:ring-emerald-700"
+                />
+                {recoveryError && <p className="text-sm text-red-600 mb-3">{recoveryError}</p>}
+                <button type="submit" className="w-full bg-emerald-800 text-white text-sm font-medium py-2 rounded-md hover:bg-emerald-900 transition">
+                  Link this device
+                </button>
+              </form>
+              <button
+                onClick={() => { setShowRecovery(false); setRecoveryError(null) }}
+                className="w-full text-center text-xs text-stone-500 hover:text-stone-700 underline mt-4 transition"
+              >
+                New here? Pick a username instead
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  if (showNewCodeModal && newRecoveryCode) {
+    return (
+      <div className="min-h-screen bg-stone-100 flex items-center justify-center p-4">
+        <div className="bg-white rounded-xl shadow-sm border border-stone-200 p-8 w-full max-w-sm text-center">
+          <h1 className="text-xl font-bold text-stone-800 mb-1">Save your recovery code</h1>
+          <p className="text-sm text-stone-500 mb-4">
+            You'll need this to log in on other devices. It won't be shown again.
+          </p>
+          <p className="font-mono text-lg tracking-widest bg-stone-100 border border-stone-300 rounded-md py-3 mb-4 select-all">
+            {newRecoveryCode}
+          </p>
+          <button
+            onClick={() => setShowNewCodeModal(false)}
+            className="w-full bg-emerald-800 text-white text-sm font-medium py-2 rounded-md hover:bg-emerald-900 transition"
+          >
+            I've saved it, continue
           </button>
-        </form>
+        </div>
       </div>
     )
   }
 
   const myStatus = selectedEvent ? statusFor(selectedEvent.id) : 'undecided'
   const { attending, declined } = selectedEvent ? attendeesFor(selectedEvent.id) : { attending: [], declined: [] }
-  const isEventOwner = selectedEvent && session && selectedEvent.user_id === session.user.id
+  const isEventOwner = selectedEvent && profile && selectedEvent.user_id === profile.id
   const isAdmin = profile?.is_admin
   const canDelete = isEventOwner || isAdmin
 
@@ -338,6 +430,13 @@ export default function App() {
             <span className="w-3 h-3 rounded-full bg-stone-400 inline-block ml-3" />
             Undecided
           </div>
+
+          <button
+            onClick={() => setMyCodeModalOpen(true)}
+            className="text-sm px-3 py-1.5 rounded-md bg-stone-200 hover:bg-stone-300 transition"
+          >
+            My code
+          </button>
 
           <button
             onClick={() => setUsersModalOpen(true)}
@@ -479,6 +578,21 @@ export default function App() {
                 Close
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {myCodeModalOpen && profile && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6 text-center">
+            <h2 className="text-lg font-semibold text-stone-800 mb-1">Your recovery code</h2>
+            <p className="text-sm text-stone-500 mb-4">Use this to log in as {profile.username} on another device.</p>
+            <p className="font-mono text-lg tracking-widest bg-stone-100 border border-stone-300 rounded-md py-3 mb-4 select-all">
+              {profile.recovery_code}
+            </p>
+            <button onClick={() => setMyCodeModalOpen(false)} className="w-full px-4 py-2 text-sm rounded-md bg-stone-100 hover:bg-stone-200 transition">
+              Close
+            </button>
           </div>
         </div>
       )}
