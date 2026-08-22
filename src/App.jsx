@@ -11,6 +11,14 @@ const STATUS_COLORS = {
   undecided: { bg: '#9c9184', border: '#7d745f' },
 }
 
+const CHANGELOG = [
+  { date: '2026-08-23', text: 'Added user list, event creator visibility, admin moderation, and this changelog.' },
+  { date: '2026-08-22', text: 'Switched events to all-day only, added RSVP (Attending / Can\'t go) with color-coded status.' },
+  { date: '2026-08-22', text: 'Removed group password gate; added anonymous sign-in with editable usernames.' },
+  { date: '2026-08-22', text: 'Added background video widget (Subway Surfers / Family Guy / Rick and Morty).' },
+  { date: '2026-08-22', text: 'Initial launch: shared calendar with FullCalendar, Supabase, and live sync.' },
+]
+
 export default function App() {
   const [session, setSession] = useState(null)
   const [profile, setProfile] = useState(null)
@@ -30,6 +38,9 @@ export default function App() {
 
   const [detailModalOpen, setDetailModalOpen] = useState(false)
   const [selectedEvent, setSelectedEvent] = useState(null)
+
+  const [usersModalOpen, setUsersModalOpen] = useState(false)
+  const [changelogOpen, setChangelogOpen] = useState(false)
 
   useEffect(() => {
     const init = async () => {
@@ -139,6 +150,7 @@ export default function App() {
       .channel('calendar-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, () => fetchAll())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'rsvps' }, () => fetchAll())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => fetchAll())
       .subscribe()
 
     return () => supabase.removeChannel(channel)
@@ -236,7 +248,8 @@ export default function App() {
   const handleDeleteEvent = async () => {
     if (!selectedEvent) return
     const isOwner = session && selectedEvent.user_id === session.user.id
-    if (!isOwner) return
+    const isAdmin = profile?.is_admin
+    if (!isOwner && !isAdmin) return
 
     const confirmDelete = window.confirm(`Delete "${selectedEvent.title}"?`)
     if (!confirmDelete) return
@@ -302,12 +315,17 @@ export default function App() {
   const myStatus = selectedEvent ? statusFor(selectedEvent.id) : 'undecided'
   const { attending, declined } = selectedEvent ? attendeesFor(selectedEvent.id) : { attending: [], declined: [] }
   const isEventOwner = selectedEvent && session && selectedEvent.user_id === session.user.id
+  const isAdmin = profile?.is_admin
+  const canDelete = isEventOwner || isAdmin
 
   return (
-    <div className="min-h-screen bg-stone-100 p-4 md:p-8">
+    <div className="min-h-screen bg-stone-100 p-4 md:p-8 pb-16">
       <header className="max-w-6xl mx-auto mb-6 flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-stone-800">Group Calendar</h1>
+          <h1 className="text-2xl font-bold text-stone-800">
+            Group Calendar
+            {isAdmin && <span className="ml-2 text-xs bg-amber-800 text-white px-2 py-0.5 rounded-full align-middle">Admin</span>}
+          </h1>
           <p className="text-sm text-stone-500">Click a day to add an event. Click an event to RSVP.</p>
         </div>
 
@@ -320,6 +338,13 @@ export default function App() {
             <span className="w-3 h-3 rounded-full bg-stone-400 inline-block ml-3" />
             Undecided
           </div>
+
+          <button
+            onClick={() => setUsersModalOpen(true)}
+            className="text-sm px-3 py-1.5 rounded-md bg-stone-200 hover:bg-stone-300 transition"
+          >
+            Users ({profiles.length})
+          </button>
 
           {profile && <UsernameEditor username={profile.username} onSave={handleRename} />}
         </div>
@@ -384,9 +409,10 @@ export default function App() {
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
             <h2 className="text-lg font-semibold text-stone-800 mb-1">{selectedEvent.title}</h2>
-            <p className="text-sm text-stone-500 mb-4">
+            <p className="text-sm text-stone-500">
               {new Date(selectedEvent.event_date + 'T00:00:00').toLocaleDateString(undefined, { dateStyle: 'full' })}
             </p>
+            <p className="text-xs text-stone-400 mb-4">Created by {usernameFor(selectedEvent.user_id)}</p>
 
             <div className="flex gap-2 mb-4">
               <button
@@ -423,9 +449,9 @@ export default function App() {
             </div>
 
             <div className="flex justify-between items-center">
-              {isEventOwner ? (
+              {canDelete ? (
                 <button onClick={handleDeleteEvent} className="text-sm text-red-600 hover:text-red-800 transition">
-                  Delete event
+                  {isAdmin && !isEventOwner ? 'Delete (admin)' : 'Delete event'}
                 </button>
               ) : <span />}
               <button onClick={closeDetailModal} className="px-4 py-2 text-sm rounded-md bg-stone-100 hover:bg-stone-200 transition">
@@ -436,6 +462,28 @@ export default function App() {
         </div>
       )}
 
+      {usersModalOpen && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6">
+            <h2 className="text-lg font-semibold text-stone-800 mb-4">Users ({profiles.length})</h2>
+            <ul className="space-y-2 max-h-80 overflow-y-auto">
+              {profiles.map((p) => (
+                <li key={p.id} className="flex items-center justify-between text-sm text-stone-700 border-b border-stone-100 pb-2">
+                  <span>{p.username}</span>
+                  {p.is_admin && <span className="text-xs bg-amber-800 text-white px-2 py-0.5 rounded-full">Admin</span>}
+                </li>
+              ))}
+            </ul>
+            <div className="flex justify-end pt-4">
+              <button onClick={() => setUsersModalOpen(false)} className="px-4 py-2 text-sm rounded-md bg-stone-100 hover:bg-stone-200 transition">
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <ChangelogButton open={changelogOpen} setOpen={setChangelogOpen} />
       <BrainrotWidget />
     </div>
   )
@@ -466,6 +514,40 @@ function UsernameEditor({ username, onSave }) {
       <button type="submit" className="text-sm px-2 py-1 rounded-md bg-emerald-800 text-white hover:bg-emerald-900 transition">Save</button>
       <button type="button" onClick={() => setEditing(false)} className="text-sm px-2 py-1 rounded-md bg-stone-100 hover:bg-stone-200 transition">Cancel</button>
     </form>
+  )
+}
+
+function ChangelogButton({ open, setOpen }) {
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="fixed bottom-4 left-4 z-40 text-xs px-3 py-1.5 rounded-full bg-stone-800 text-white shadow-md hover:bg-stone-900 transition"
+      >
+        What's new
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 max-h-[80vh] overflow-y-auto">
+            <h2 className="text-lg font-semibold text-stone-800 mb-4">Changelog</h2>
+            <ul className="space-y-3">
+              {CHANGELOG.map((entry, i) => (
+                <li key={i} className="border-b border-stone-100 pb-3 last:border-0">
+                  <p className="text-xs text-stone-400 mb-0.5">{entry.date}</p>
+                  <p className="text-sm text-stone-700">{entry.text}</p>
+                </li>
+              ))}
+            </ul>
+            <div className="flex justify-end pt-4">
+              <button onClick={() => setOpen(false)} className="px-4 py-2 text-sm rounded-md bg-stone-100 hover:bg-stone-200 transition">
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 
