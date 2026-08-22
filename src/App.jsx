@@ -4,7 +4,7 @@ import dayGridPlugin from '@fullcalendar/daygrid'
 import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import { supabase } from './lib/supabase'
-import MySchedule, { getFifoStatusForDate, getFifoAwayHomeStatus, matchesRecurringRule, isDateBlocked } from './MySchedule'
+import MySchedule, { getBlocksForDate, formatTimeRange } from './MySchedule'
 
 const STATUS_COLORS = {
   attending: { bg: '#2d4a3a', border: '#1f3428' },
@@ -12,15 +12,14 @@ const STATUS_COLORS = {
   undecided: { bg: '#9c9184', border: '#7d745f' },
 }
 
-const FIFO_COLORS = {
-  'fly-out': { bg: '#b45309', border: '#92400e' },
-  'fly-in': { bg: '#0369a1', border: '#075985' },
-  away: { bg: '#78716c', border: '#57534e' },
-  home: { bg: '#a3a3a3', border: '#737373' },
+const BLOCK_COLORS = {
+  unavailable: { bg: '#78716c', border: '#57534e' },
+  available: { bg: '#15803d', border: '#166534' },
 }
 
 const CHANGELOG = [
-  { date: '2026-08-23', text: 'FIFO rosters now use whole-week cycles so fly-out/fly-in always lands on the same weekday. Added holiday date blocking and bulk roster clearing.' },
+  { date: '2026-08-23', text: 'Replaced FIFO rosters with a unified schedule blocks system: mark unavailable/available for a single day, date range, or recurring weekday, all-day by default or with specific times.' },
+  { date: '2026-08-23', text: 'FIFO rosters used whole-week cycles so fly-out/fly-in always lands on the same weekday. Added holiday date blocking and bulk roster clearing.' },
   { date: '2026-08-23', text: 'Added recurring weekly unavailability and FIFO roster scheduling.' },
   { date: '2026-08-23', text: 'Added multi-device account recovery via recovery codes.' },
   { date: '2026-08-23', text: 'Added user list, event creator visibility, admin moderation, and this changelog.' },
@@ -47,9 +46,7 @@ export default function App() {
   const [events, setEvents] = useState([])
   const [profiles, setProfiles] = useState([])
   const [rsvps, setRsvps] = useState([])
-  const [recurringRules, setRecurringRules] = useState([])
-  const [fifoRosters, setFifoRosters] = useState([])
-  const [scheduleOverrides, setScheduleOverrides] = useState([])
+  const [scheduleBlocks, setScheduleBlocks] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -167,13 +164,11 @@ export default function App() {
     if (!profile) return
     setLoading(true)
 
-    const [eventsRes, rsvpsRes, profilesRes, recurringRes, rosterRes, overrideRes] = await Promise.all([
+    const [eventsRes, rsvpsRes, profilesRes, blocksRes] = await Promise.all([
       supabase.from('events').select('*').order('event_date', { ascending: true }),
       supabase.from('rsvps').select('*'),
       supabase.from('profiles').select('*'),
-      supabase.from('recurring_unavailability').select('*'),
-      supabase.from('fifo_rosters').select('*').eq('active', true),
-      supabase.from('schedule_overrides').select('*'),
+      supabase.from('schedule_blocks').select('*'),
     ])
 
     if (eventsRes.error) setError(eventsRes.error.message)
@@ -185,14 +180,8 @@ export default function App() {
     if (profilesRes.error) setError(profilesRes.error.message)
     else setProfiles(profilesRes.data)
 
-    if (recurringRes.error) setError(recurringRes.error.message)
-    else setRecurringRules(recurringRes.data)
-
-    if (rosterRes.error) setError(rosterRes.error.message)
-    else setFifoRosters(rosterRes.data)
-
-    if (overrideRes.error) setError(overrideRes.error.message)
-    else setScheduleOverrides(overrideRes.data)
+    if (blocksRes.error) setError(blocksRes.error.message)
+    else setScheduleBlocks(blocksRes.data)
 
     setLoading(false)
   }, [profile])
@@ -208,9 +197,7 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, () => fetchAll())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'rsvps' }, () => fetchAll())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => fetchAll())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'recurring_unavailability' }, () => fetchAll())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'fifo_rosters' }, () => fetchAll())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'schedule_overrides' }, () => fetchAll())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'schedule_blocks' }, () => fetchAll())
       .subscribe()
 
     return () => supabase.removeChannel(channel)
@@ -346,54 +333,25 @@ export default function App() {
   const rangeEnd = new Date()
   rangeEnd.setMonth(rangeEnd.getMonth() + 3)
 
+  const uniqueUserIds = [...new Set(scheduleBlocks.map((b) => b.user_id))]
+
   for (let d = new Date(rangeStart); d <= rangeEnd; d.setDate(d.getDate() + 1)) {
     const dateStr = d.toISOString().split('T')[0]
 
-    recurringRules.forEach((rule) => {
-      if (isDateBlocked(scheduleOverrides, rule.user_id, dateStr)) return
-      if (matchesRecurringRule(rule, dateStr)) {
+    uniqueUserIds.forEach((userId) => {
+      const blocksToday = getBlocksForDate(scheduleBlocks, userId, dateStr)
+      blocksToday.forEach((block) => {
+        const timeLabel = formatTimeRange(block)
         scheduleCalendarItems.push({
-          id: `rec-${rule.id}-${dateStr}`,
-          title: `${rule.label} (${usernameFor(rule.user_id)})`,
+          id: `block-${block.id}-${dateStr}`,
+          title: `${block.label} (${usernameFor(userId)})${block.all_day ? '' : ` ${timeLabel}`}`,
           start: dateStr,
           allDay: true,
-          backgroundColor: '#57534e',
-          borderColor: '#44403c',
+          backgroundColor: BLOCK_COLORS[block.status].bg,
+          borderColor: BLOCK_COLORS[block.status].border,
           extendedProps: { isSchedule: true },
         })
-      }
-    })
-
-    fifoRosters.forEach((roster) => {
-      if (isDateBlocked(scheduleOverrides, roster.user_id, dateStr)) return
-
-      const flyStatus = getFifoStatusForDate(roster, dateStr)
-      const labels = { 'fly-out': 'Flies out', 'fly-in': 'Flies in', away: 'Away', home: 'Home' }
-
-      if (flyStatus) {
-        scheduleCalendarItems.push({
-          id: `fifo-${roster.id}-${dateStr}`,
-          title: `${labels[flyStatus]} (${usernameFor(roster.user_id)})`,
-          start: dateStr,
-          allDay: true,
-          backgroundColor: FIFO_COLORS[flyStatus].bg,
-          borderColor: FIFO_COLORS[flyStatus].border,
-          extendedProps: { isSchedule: true },
-        })
-      } else {
-        const awayHomeStatus = getFifoAwayHomeStatus(roster, dateStr)
-        if (awayHomeStatus) {
-          scheduleCalendarItems.push({
-            id: `fifo-${roster.id}-${dateStr}`,
-            title: `${labels[awayHomeStatus]} (${usernameFor(roster.user_id)})`,
-            start: dateStr,
-            allDay: true,
-            backgroundColor: FIFO_COLORS[awayHomeStatus].bg,
-            borderColor: FIFO_COLORS[awayHomeStatus].border,
-            extendedProps: { isSchedule: true },
-          })
-        }
-      }
+      })
     })
   }
 
@@ -540,10 +498,8 @@ export default function App() {
         <span><span className="inline-block w-2.5 h-2.5 rounded-full bg-emerald-900 mr-1" />Attending</span>
         <span><span className="inline-block w-2.5 h-2.5 rounded-full bg-red-800 mr-1" />Declined</span>
         <span><span className="inline-block w-2.5 h-2.5 rounded-full bg-stone-400 mr-1" />Undecided</span>
-        <span><span className="inline-block w-2.5 h-2.5 rounded-full bg-amber-700 mr-1" />Fly-out</span>
-        <span><span className="inline-block w-2.5 h-2.5 rounded-full bg-sky-700 mr-1" />Fly-in</span>
-        <span><span className="inline-block w-2.5 h-2.5 rounded-full bg-stone-600 mr-1" />Away</span>
-        <span><span className="inline-block w-2.5 h-2.5 rounded-full bg-stone-400 mr-1" />Home / Recurring</span>
+        <span><span className="inline-block w-2.5 h-2.5 rounded-full bg-stone-600 mr-1" />Unavailable</span>
+        <span><span className="inline-block w-2.5 h-2.5 rounded-full bg-green-700 mr-1" />Available</span>
       </div>
 
       {error && (
