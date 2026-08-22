@@ -18,6 +18,7 @@ const BLOCK_COLORS = {
 }
 
 const CHANGELOG = [
+  { date: '2026-08-23', text: 'Fixed sign-up bug where new users could not create a profile due to a missing recovery code.' },
   { date: '2026-08-23', text: 'Replaced FIFO rosters with a unified schedule blocks system: mark unavailable/available for a single day, date range, or recurring weekday, all-day by default or with specific times.' },
   { date: '2026-08-23', text: 'FIFO rosters used whole-week cycles so fly-out/fly-in always lands on the same weekday. Added holiday date blocking and bulk roster clearing.' },
   { date: '2026-08-23', text: 'Added recurring weekly unavailability and FIFO roster scheduling.' },
@@ -98,6 +99,15 @@ export default function App() {
     fetchProfile()
   }, [fetchProfile])
 
+  const generateRecoveryCode = () => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+    let code = ''
+    for (let i = 0; i < 8; i++) {
+      code += chars[Math.floor(Math.random() * chars.length)]
+    }
+    return code
+  }
+
   const handleCreateProfile = async (e) => {
     e.preventDefault()
     setUsernameError(null)
@@ -107,9 +117,16 @@ export default function App() {
       return
     }
 
+    const recoveryCode = generateRecoveryCode()
+
     const { data, error: insertError } = await supabase
       .from('profiles')
-      .insert({ id: session.user.id, username: trimmed, auth_user_ids: [session.user.id] })
+      .insert({
+        id: session.user.id,
+        username: trimmed,
+        auth_user_ids: [session.user.id],
+        recovery_code: recoveryCode,
+      })
       .select()
       .single()
 
