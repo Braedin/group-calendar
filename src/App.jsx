@@ -4,6 +4,7 @@ import dayGridPlugin from '@fullcalendar/daygrid'
 import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import { supabase } from './lib/supabase'
+import MySchedule, { getFifoStatusForDate, matchesRecurringRule } from './MySchedule'
 
 const STATUS_COLORS = {
   attending: { bg: '#2d4a3a', border: '#1f3428' },
@@ -11,7 +12,15 @@ const STATUS_COLORS = {
   undecided: { bg: '#9c9184', border: '#7d745f' },
 }
 
+const FIFO_COLORS = {
+  'fly-out': { bg: '#b45309', border: '#92400e' },
+  'fly-in': { bg: '#0369a1', border: '#075985' },
+  away: { bg: '#78716c', border: '#57534e' },
+  home: { bg: '#a3a3a3', border: '#737373' },
+}
+
 const CHANGELOG = [
+  { date: '2026-08-23', text: 'Added recurring weekly unavailability and FIFO roster scheduling.' },
   { date: '2026-08-23', text: 'Added multi-device account recovery via recovery codes.' },
   { date: '2026-08-23', text: 'Added user list, event creator visibility, admin moderation, and this changelog.' },
   { date: '2026-08-22', text: "Switched events to all-day only, added RSVP (Attending / Can't go) with color-coded status." },
@@ -37,6 +46,8 @@ export default function App() {
   const [events, setEvents] = useState([])
   const [profiles, setProfiles] = useState([])
   const [rsvps, setRsvps] = useState([])
+  const [recurringRules, setRecurringRules] = useState([])
+  const [fifoRosters, setFifoRosters] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -50,6 +61,7 @@ export default function App() {
   const [usersModalOpen, setUsersModalOpen] = useState(false)
   const [changelogOpen, setChangelogOpen] = useState(false)
   const [myCodeModalOpen, setMyCodeModalOpen] = useState(false)
+  const [myScheduleOpen, setMyScheduleOpen] = useState(false)
 
   useEffect(() => {
     const init = async () => {
@@ -153,10 +165,12 @@ export default function App() {
     if (!profile) return
     setLoading(true)
 
-    const [eventsRes, rsvpsRes, profilesRes] = await Promise.all([
+    const [eventsRes, rsvpsRes, profilesRes, recurringRes, rosterRes] = await Promise.all([
       supabase.from('events').select('*').order('event_date', { ascending: true }),
       supabase.from('rsvps').select('*'),
       supabase.from('profiles').select('*'),
+      supabase.from('recurring_unavailability').select('*'),
+      supabase.from('fifo_rosters').select('*').eq('active', true),
     ])
 
     if (eventsRes.error) setError(eventsRes.error.message)
@@ -167,6 +181,12 @@ export default function App() {
 
     if (profilesRes.error) setError(profilesRes.error.message)
     else setProfiles(profilesRes.data)
+
+    if (recurringRes.error) setError(recurringRes.error.message)
+    else setRecurringRules(recurringRes.data)
+
+    if (rosterRes.error) setError(rosterRes.error.message)
+    else setFifoRosters(rosterRes.data)
 
     setLoading(false)
   }, [profile])
@@ -182,6 +202,8 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, () => fetchAll())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'rsvps' }, () => fetchAll())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => fetchAll())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'recurring_unavailability' }, () => fetchAll())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'fifo_rosters' }, () => fetchAll())
       .subscribe()
 
     return () => supabase.removeChannel(channel)
@@ -235,6 +257,7 @@ export default function App() {
   }
 
   const handleEventClick = (info) => {
+    if (info.event.extendedProps.isSchedule) return
     const ev = events.find((e) => e.id === info.event.id)
     if (ev) {
       setSelectedEvent(ev)
@@ -298,7 +321,7 @@ export default function App() {
     return p ? p.username : 'Unknown'
   }
 
-  const calendarEvents = events.map((ev) => {
+  const eventCalendarItems = events.map((ev) => {
     const status = statusFor(ev.id)
     return {
       id: ev.id,
@@ -309,6 +332,48 @@ export default function App() {
       borderColor: STATUS_COLORS[status].border,
     }
   })
+
+  const scheduleCalendarItems = []
+  const rangeStart = new Date()
+  rangeStart.setMonth(rangeStart.getMonth() - 1)
+  const rangeEnd = new Date()
+  rangeEnd.setMonth(rangeEnd.getMonth() + 3)
+
+  for (let d = new Date(rangeStart); d <= rangeEnd; d.setDate(d.getDate() + 1)) {
+    const dateStr = d.toISOString().split('T')[0]
+
+    recurringRules.forEach((rule) => {
+      if (matchesRecurringRule(rule, dateStr)) {
+        scheduleCalendarItems.push({
+          id: `rec-${rule.id}-${dateStr}`,
+          title: `${rule.label} (${usernameFor(rule.user_id)})`,
+          start: dateStr,
+          allDay: true,
+          backgroundColor: '#57534e',
+          borderColor: '#44403c',
+          extendedProps: { isSchedule: true },
+        })
+      }
+    })
+
+    fifoRosters.forEach((roster) => {
+      const status = getFifoStatusForDate(roster, dateStr)
+      if (status) {
+        const labels = { 'fly-out': 'Flies out', 'fly-in': 'Flies in', away: 'Away', home: 'Home' }
+        scheduleCalendarItems.push({
+          id: `fifo-${roster.id}-${dateStr}`,
+          title: `${labels[status]} (${usernameFor(roster.user_id)})`,
+          start: dateStr,
+          allDay: true,
+          backgroundColor: FIFO_COLORS[status].bg,
+          borderColor: FIFO_COLORS[status].border,
+          extendedProps: { isSchedule: true },
+        })
+      }
+    })
+  }
+
+  const calendarEvents = [...eventCalendarItems, ...scheduleCalendarItems]
 
   if (authLoading) {
     return (
@@ -421,15 +486,13 @@ export default function App() {
           <p className="text-sm text-stone-500">Click a day to add an event. Click an event to RSVP.</p>
         </div>
 
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 text-sm">
-            <span className="w-3 h-3 rounded-full bg-emerald-900 inline-block" />
-            Attending
-            <span className="w-3 h-3 rounded-full bg-red-800 inline-block ml-3" />
-            Declined
-            <span className="w-3 h-3 rounded-full bg-stone-400 inline-block ml-3" />
-            Undecided
-          </div>
+        <div className="flex items-center gap-4 flex-wrap">
+          <button
+            onClick={() => setMyScheduleOpen(true)}
+            className="text-sm px-3 py-1.5 rounded-md bg-emerald-800 text-white hover:bg-emerald-900 transition"
+          >
+            My schedule
+          </button>
 
           <button
             onClick={() => setMyCodeModalOpen(true)}
@@ -448,6 +511,16 @@ export default function App() {
           {profile && <UsernameEditor username={profile.username} onSave={handleRename} />}
         </div>
       </header>
+
+      <div className="max-w-6xl mx-auto mb-4 flex flex-wrap gap-x-4 gap-y-1 text-xs text-stone-500">
+        <span><span className="inline-block w-2.5 h-2.5 rounded-full bg-emerald-900 mr-1" />Attending</span>
+        <span><span className="inline-block w-2.5 h-2.5 rounded-full bg-red-800 mr-1" />Declined</span>
+        <span><span className="inline-block w-2.5 h-2.5 rounded-full bg-stone-400 mr-1" />Undecided</span>
+        <span><span className="inline-block w-2.5 h-2.5 rounded-full bg-amber-700 mr-1" />Fly-out</span>
+        <span><span className="inline-block w-2.5 h-2.5 rounded-full bg-sky-700 mr-1" />Fly-in</span>
+        <span><span className="inline-block w-2.5 h-2.5 rounded-full bg-stone-600 mr-1" />Away</span>
+        <span><span className="inline-block w-2.5 h-2.5 rounded-full bg-stone-400 mr-1" />Home / Recurring</span>
+      </div>
 
       {error && (
         <div className="max-w-6xl mx-auto mb-4 rounded-md bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2">
@@ -595,6 +668,14 @@ export default function App() {
             </button>
           </div>
         </div>
+      )}
+
+      {myScheduleOpen && profile && (
+        <MySchedule
+          profile={profile}
+          onClose={() => setMyScheduleOpen(false)}
+          onSaved={fetchAll}
+        />
       )}
 
       <ChangelogButton open={changelogOpen} setOpen={setChangelogOpen} />
