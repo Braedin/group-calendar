@@ -10,20 +10,12 @@ const CATEGORY_COLORS = {
   availability: { bg: '#8b6f47', border: '#6f5738' },
 }
 
-const GATE_SESSION_KEY = 'gc_gate_passed'
-
 export default function App() {
-  const [gatePassed, setGatePassed] = useState(
-    () => sessionStorage.getItem(GATE_SESSION_KEY) === 'true'
-  )
-  const [groupPassword, setGroupPassword] = useState('')
-  const [gateError, setGateError] = useState(null)
-  const [gateLoading, setGateLoading] = useState(false)
-
   const [session, setSession] = useState(null)
   const [profile, setProfile] = useState(null)
   const [usernameInput, setUsernameInput] = useState('')
   const [usernameError, setUsernameError] = useState(null)
+  const [authLoading, setAuthLoading] = useState(true)
 
   const [events, setEvents] = useState([])
   const [loading, setLoading] = useState(true)
@@ -33,47 +25,28 @@ export default function App() {
   const [modalRange, setModalRange] = useState(null)
   const [form, setForm] = useState({ title: '', category: 'event' })
 
-  const handleGateSubmit = async (e) => {
-    e.preventDefault()
-    setGateLoading(true)
-    setGateError(null)
-
-    try {
-      const { data, error: fnError } = await supabase.functions.invoke(
-        'verify-group-password',
-        { body: { password: groupPassword } }
-      )
-
-      if (fnError || !data?.ok) {
-        setGateError('Incorrect password.')
-        setGateLoading(false)
-        return
-      }
-
-      const { error: signInError } = await supabase.auth.signInAnonymously()
-      if (signInError) {
-        setGateError(signInError.message)
-        setGateLoading(false)
-        return
-      }
-
-      sessionStorage.setItem(GATE_SESSION_KEY, 'true')
-      setGatePassed(true)
-    } catch (err) {
-      setGateError('Something went wrong. Try again.')
-    } finally {
-      setGateLoading(false)
-    }
-  }
-
   useEffect(() => {
-    if (!gatePassed) return
-    supabase.auth.getSession().then(({ data }) => setSession(data.session))
+    const init = async () => {
+      const { data } = await supabase.auth.getSession()
+      if (data.session) {
+        setSession(data.session)
+      } else {
+        const { data: signInData, error: signInError } = await supabase.auth.signInAnonymously()
+        if (signInError) {
+          setError(signInError.message)
+        } else {
+          setSession(signInData.session)
+        }
+      }
+      setAuthLoading(false)
+    }
+    init()
+
     const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
       setSession(sess)
     })
     return () => sub.subscription.unsubscribe()
-  }, [gatePassed])
+  }, [])
 
   const fetchProfile = useCallback(async () => {
     if (!session) return
@@ -249,33 +222,10 @@ export default function App() {
     extendedProps: { user_id: ev.user_id, category: ev.category },
   }))
 
-  if (!gatePassed) {
+  if (authLoading) {
     return (
-      <div className="min-h-screen bg-stone-100 flex items-center justify-center p-4">
-        <form
-          onSubmit={handleGateSubmit}
-          className="bg-white rounded-xl shadow-sm border border-stone-200 p-8 w-full max-w-sm"
-        >
-          <h1 className="text-xl font-bold text-stone-800 mb-1">Group Calendar</h1>
-          <p className="text-sm text-stone-500 mb-6">Enter the group password to continue.</p>
-          <input
-            type="password"
-            required
-            autoFocus
-            value={groupPassword}
-            onChange={(e) => setGroupPassword(e.target.value)}
-            placeholder="Password"
-            className="w-full border border-stone-300 rounded-md px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-emerald-700"
-          />
-          {gateError && <p className="text-sm text-red-600 mb-3">{gateError}</p>}
-          <button
-            type="submit"
-            disabled={gateLoading}
-            className="w-full bg-emerald-800 text-white text-sm font-medium py-2 rounded-md hover:bg-emerald-900 transition disabled:opacity-50"
-          >
-            {gateLoading ? 'Checking...' : 'Enter'}
-          </button>
-        </form>
+      <div className="min-h-screen bg-stone-100 flex items-center justify-center">
+        <p className="text-stone-500 text-sm">Loading...</p>
       </div>
     )
   }
