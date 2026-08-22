@@ -385,6 +385,8 @@ export default function App() {
           </div>
         </div>
       )}
+
+      <BrainrotWidget />
     </div>
   )
 }
@@ -431,5 +433,61 @@ function UsernameEditor({ username, onSave }) {
         Cancel
       </button>
     </form>
+  )
+}
+
+function BrainrotWidget() {
+  const [videoKey, setVideoKey] = useState('subway')
+  const [minimized, setMinimized] = useState(false)
+
+  const VIDEOS = {
+    subway: 'eRXE8Aebp7s',
+    familyguy: 'pLSy_xMBKHY',
+    rickmorty: 'VBZ-_ICc4dQ',
+  }
+
+  const LABELS = {
+    subway: 'Subway Surfers',
+    familyguy: 'Family Guy',
+    rickmorty: 'Rick and Morty',
+  }
+
+  const embedSrc = `https://www.youtube.com/embed/${VIDEOS[videoKey]}?autoplay=1&mute=1&loop=1&playlist=${VIDEOS[videoKey]}&controls=1`
+
+  return (
+    <div className="fixed bottom-4 right-4 z-40 flex flex-col items-end gap-2">
+      {!minimized && (
+        <div className="bg-black rounded-lg shadow-xl overflow-hidden border border-stone-300" style={{ width: 320, height: 180 }}>
+          <iframe
+            key={videoKey}
+            width="320"
+            height="180"
+            src={embedSrc}
+            title="Background video"
+            frameBorder="0"
+            allow="autoplay; encrypted-media"
+            allowFullScreen
+          />
+        </div>
+      )}
+
+      <div className="bg-white rounded-md shadow-md border border-stone-200 px-2 py-1.5 flex items-center gap-2">
+        <select
+          value={videoKey}
+          onChange={(e) => setVideoKey(e.target.value)}
+          className="text-xs border border-stone-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-emerald-700"
+        >
+          {Object.keys(VIDEOS).map((key) => (
+            <option key={key} value={key}>{LABELS[key]}</option>
+          ))}
+        </select>
+        <button
+          onClick={() => setMinimized((m) => !m)}
+          className="text-xs px-2 py-1 rounded bg-stone-100 hover:bg-stone-200 transition"
+        >
+          {minimized ? 'Show' : 'Hide'}
+        </button>
+      </div>
+    </div>
   )
 }
