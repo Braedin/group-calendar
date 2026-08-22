@@ -5,9 +5,10 @@ import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import { supabase } from './lib/supabase'
 
-const CATEGORY_COLORS = {
-  event: { bg: '#2d4a3a', border: '#1f3428' },
-  availability: { bg: '#8b6f47', border: '#6f5738' },
+const STATUS_COLORS = {
+  attending: { bg: '#2d4a3a', border: '#1f3428' },
+  declined: { bg: '#8b3a3a', border: '#6b2c2c' },
+  undecided: { bg: '#9c9184', border: '#7d745f' },
 }
 
 export default function App() {
@@ -18,12 +19,17 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true)
 
   const [events, setEvents] = useState([])
+  const [profiles, setProfiles] = useState([])
+  const [rsvps, setRsvps] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
-  const [modalOpen, setModalOpen] = useState(false)
-  const [modalRange, setModalRange] = useState(null)
-  const [form, setForm] = useState({ title: '', category: 'event' })
+  const [createModalOpen, setCreateModalOpen] = useState(false)
+  const [createDate, setCreateDate] = useState(null)
+  const [newTitle, setNewTitle] = useState('')
+
+  const [detailModalOpen, setDetailModalOpen] = useState(false)
+  const [selectedEvent, setSelectedEvent] = useState(null)
 
   useEffect(() => {
     const init = async () => {
@@ -32,11 +38,8 @@ export default function App() {
         setSession(data.session)
       } else {
         const { data: signInData, error: signInError } = await supabase.auth.signInAnonymously()
-        if (signInError) {
-          setError(signInError.message)
-        } else {
-          setSession(signInData.session)
-        }
+        if (signInError) setError(signInError.message)
+        else setSession(signInData.session)
       }
       setAuthLoading(false)
     }
@@ -80,14 +83,9 @@ export default function App() {
       .single()
 
     if (insertError) {
-      if (insertError.code === '23505') {
-        setUsernameError('That username is taken. Try another.')
-      } else {
-        setUsernameError(insertError.message)
-      }
+      setUsernameError(insertError.code === '23505' ? 'That username is taken. Try another.' : insertError.message)
       return
     }
-
     setProfile(data)
   }
 
@@ -103,86 +101,71 @@ export default function App() {
       .single()
 
     if (updateError) {
-      setError(
-        updateError.code === '23505'
-          ? 'That username is taken.'
-          : updateError.message
-      )
+      setError(updateError.code === '23505' ? 'That username is taken.' : updateError.message)
     } else {
       setProfile(data)
-      fetchEvents()
     }
   }
 
-  const fetchEvents = useCallback(async () => {
+  const fetchAll = useCallback(async () => {
     if (!profile) return
     setLoading(true)
-    const { data, error: fetchError } = await supabase
-      .from('events')
-      .select('*')
-      .order('start_time', { ascending: true })
 
-    if (fetchError) setError(fetchError.message)
-    else {
-      setEvents(data)
-      setError(null)
-    }
+    const [eventsRes, rsvpsRes, profilesRes] = await Promise.all([
+      supabase.from('events').select('*').order('event_date', { ascending: true }),
+      supabase.from('rsvps').select('*'),
+      supabase.from('profiles').select('*'),
+    ])
+
+    if (eventsRes.error) setError(eventsRes.error.message)
+    else setEvents(eventsRes.data)
+
+    if (rsvpsRes.error) setError(rsvpsRes.error.message)
+    else setRsvps(rsvpsRes.data)
+
+    if (profilesRes.error) setError(profilesRes.error.message)
+    else setProfiles(profilesRes.data)
+
     setLoading(false)
   }, [profile])
 
   useEffect(() => {
-    fetchEvents()
-  }, [fetchEvents])
+    fetchAll()
+  }, [fetchAll])
 
   useEffect(() => {
     if (!profile) return
     const channel = supabase
-      .channel('events-realtime')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'events' },
-        () => fetchEvents()
-      )
+      .channel('calendar-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, () => fetchAll())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'rsvps' }, () => fetchAll())
       .subscribe()
 
     return () => supabase.removeChannel(channel)
-  }, [profile, fetchEvents])
+  }, [profile, fetchAll])
 
   const handleDateClick = (info) => {
-    const start = info.date
-    const end = new Date(start.getTime() + 60 * 60 * 1000)
-    openModal(start, end)
+    setCreateDate(info.dateStr)
+    setNewTitle('')
+    setCreateModalOpen(true)
   }
 
-  const handleSelect = (info) => {
-    openModal(info.start, info.end)
+  const closeCreateModal = () => {
+    setCreateModalOpen(false)
+    setCreateDate(null)
   }
 
-  const openModal = (start, end) => {
-    setModalRange({ start, end })
-    setForm({ title: '', category: 'event' })
-    setModalOpen(true)
-  }
-
-  const closeModal = () => {
-    setModalOpen(false)
-    setModalRange(null)
-  }
-
-  const handleSubmit = async (e) => {
+  const handleCreateEvent = async (e) => {
     e.preventDefault()
-    if (!form.title.trim()) {
+    if (!newTitle.trim()) {
       setError('Title is required.')
       return
     }
 
     const { error: insertError } = await supabase.from('events').insert({
-      title: form.title.trim(),
-      category: form.category,
-      start_time: modalRange.start.toISOString(),
-      end_time: modalRange.end.toISOString(),
+      title: newTitle.trim(),
+      event_date: createDate,
       user_id: session.user.id,
-      user_name: profile.username,
     })
 
     if (insertError) {
@@ -191,36 +174,97 @@ export default function App() {
     }
 
     setError(null)
-    closeModal()
-    fetchEvents()
+    closeCreateModal()
+    fetchAll()
   }
 
-  const handleEventClick = async (info) => {
-    const ev = info.event
-    const isOwner = session && ev.extendedProps.user_id === session.user.id
+  const myRsvpFor = (eventId) => rsvps.find((r) => r.event_id === eventId && r.user_id === session?.user?.id)
+
+  const statusFor = (eventId) => {
+    const mine = myRsvpFor(eventId)
+    return mine ? mine.status : 'undecided'
+  }
+
+  const attendeesFor = (eventId) => {
+    const attending = rsvps.filter((r) => r.event_id === eventId && r.status === 'attending')
+    const declined = rsvps.filter((r) => r.event_id === eventId && r.status === 'declined')
+    return { attending, declined }
+  }
+
+  const handleEventClick = (info) => {
+    const ev = events.find((e) => e.id === info.event.id)
+    if (ev) {
+      setSelectedEvent(ev)
+      setDetailModalOpen(true)
+    }
+  }
+
+  const closeDetailModal = () => {
+    setDetailModalOpen(false)
+    setSelectedEvent(null)
+  }
+
+  const handleSetRsvp = async (status) => {
+    if (!selectedEvent) return
+    const existing = myRsvpFor(selectedEvent.id)
+
+    if (existing) {
+      const { error: updateError } = await supabase
+        .from('rsvps')
+        .update({ status, updated_at: new Date().toISOString() })
+        .eq('id', existing.id)
+      if (updateError) setError(updateError.message)
+    } else {
+      const { error: insertError } = await supabase
+        .from('rsvps')
+        .insert({ event_id: selectedEvent.id, user_id: session.user.id, status })
+      if (insertError) setError(insertError.message)
+    }
+    fetchAll()
+  }
+
+  const handleClearRsvp = async () => {
+    if (!selectedEvent) return
+    const existing = myRsvpFor(selectedEvent.id)
+    if (!existing) return
+
+    const { error: deleteError } = await supabase.from('rsvps').delete().eq('id', existing.id)
+    if (deleteError) setError(deleteError.message)
+    fetchAll()
+  }
+
+  const handleDeleteEvent = async () => {
+    if (!selectedEvent) return
+    const isOwner = session && selectedEvent.user_id === session.user.id
     if (!isOwner) return
 
-    const confirmDelete = window.confirm(`Delete "${ev.title}"?`)
+    const confirmDelete = window.confirm(`Delete "${selectedEvent.title}"?`)
     if (!confirmDelete) return
 
-    const { error: deleteError } = await supabase
-      .from('events')
-      .delete()
-      .eq('id', ev.id)
-
+    const { error: deleteError } = await supabase.from('events').delete().eq('id', selectedEvent.id)
     if (deleteError) setError(deleteError.message)
-    else fetchEvents()
+    else {
+      closeDetailModal()
+      fetchAll()
+    }
   }
 
-  const calendarEvents = events.map((ev) => ({
-    id: ev.id,
-    title: `${ev.title} (${ev.user_name})`,
-    start: ev.start_time,
-    end: ev.end_time,
-    backgroundColor: CATEGORY_COLORS[ev.category]?.bg,
-    borderColor: CATEGORY_COLORS[ev.category]?.border,
-    extendedProps: { user_id: ev.user_id, category: ev.category },
-  }))
+  const usernameFor = (userId) => {
+    const p = profiles.find((pr) => pr.id === userId)
+    return p ? p.username : 'Unknown'
+  }
+
+  const calendarEvents = events.map((ev) => {
+    const status = statusFor(ev.id)
+    return {
+      id: ev.id,
+      title: ev.title,
+      start: ev.event_date,
+      allDay: true,
+      backgroundColor: STATUS_COLORS[status].bg,
+      borderColor: STATUS_COLORS[status].border,
+    }
+  })
 
   if (authLoading) {
     return (
@@ -233,14 +277,9 @@ export default function App() {
   if (session && !profile) {
     return (
       <div className="min-h-screen bg-stone-100 flex items-center justify-center p-4">
-        <form
-          onSubmit={handleCreateProfile}
-          className="bg-white rounded-xl shadow-sm border border-stone-200 p-8 w-full max-w-sm"
-        >
+        <form onSubmit={handleCreateProfile} className="bg-white rounded-xl shadow-sm border border-stone-200 p-8 w-full max-w-sm">
           <h1 className="text-xl font-bold text-stone-800 mb-1">Pick a username</h1>
-          <p className="text-sm text-stone-500 mb-6">
-            This is how your friends will see you. You can change it anytime.
-          </p>
+          <p className="text-sm text-stone-500 mb-6">This is how your friends will see you. You can change it anytime.</p>
           <input
             type="text"
             required
@@ -252,10 +291,7 @@ export default function App() {
             className="w-full border border-stone-300 rounded-md px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-emerald-700"
           />
           {usernameError && <p className="text-sm text-red-600 mb-3">{usernameError}</p>}
-          <button
-            type="submit"
-            className="w-full bg-emerald-800 text-white text-sm font-medium py-2 rounded-md hover:bg-emerald-900 transition"
-          >
+          <button type="submit" className="w-full bg-emerald-800 text-white text-sm font-medium py-2 rounded-md hover:bg-emerald-900 transition">
             Continue
           </button>
         </form>
@@ -263,27 +299,29 @@ export default function App() {
     )
   }
 
+  const myStatus = selectedEvent ? statusFor(selectedEvent.id) : 'undecided'
+  const { attending, declined } = selectedEvent ? attendeesFor(selectedEvent.id) : { attending: [], declined: [] }
+  const isEventOwner = selectedEvent && session && selectedEvent.user_id === session.user.id
+
   return (
     <div className="min-h-screen bg-stone-100 p-4 md:p-8">
       <header className="max-w-6xl mx-auto mb-6 flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-stone-800">Group Calendar</h1>
-          <p className="text-sm text-stone-500">
-            Click a day, or drag across days/times, to add an event or availability.
-          </p>
+          <p className="text-sm text-stone-500">Click a day to add an event. Click an event to RSVP.</p>
         </div>
 
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 text-sm">
             <span className="w-3 h-3 rounded-full bg-emerald-900 inline-block" />
-            Group Event
-            <span className="w-3 h-3 rounded-full bg-amber-800 inline-block ml-3" />
-            Availability
+            Attending
+            <span className="w-3 h-3 rounded-full bg-red-800 inline-block ml-3" />
+            Declined
+            <span className="w-3 h-3 rounded-full bg-stone-400 inline-block ml-3" />
+            Undecided
           </div>
 
-          {profile && (
-            <UsernameEditor username={profile.username} onSave={handleRename} />
-          )}
+          {profile && <UsernameEditor username={profile.username} onSave={handleRename} />}
         </div>
       </header>
 
@@ -300,88 +338,100 @@ export default function App() {
           <FullCalendar
             plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
             initialView="dayGridMonth"
-            headerToolbar={{
-              left: 'prev,next today',
-              center: 'title',
-              right: 'dayGridMonth,timeGridWeek',
-            }}
-            selectable={true}
-            selectMirror={true}
-            editable={false}
+            headerToolbar={{ left: 'prev,next today', center: 'title', right: 'dayGridMonth' }}
             dayMaxEvents={true}
             height="auto"
             events={calendarEvents}
             dateClick={handleDateClick}
-            select={handleSelect}
             eventClick={handleEventClick}
           />
         )}
       </main>
 
-      {modalOpen && (
+      {createModalOpen && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
             <h2 className="text-lg font-semibold text-stone-800 mb-4">
-              New entry - {modalRange.start.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+              New event - {new Date(createDate + 'T00:00:00').toLocaleDateString(undefined, { dateStyle: 'medium' })}
             </h2>
-
-            <form onSubmit={handleSubmit} className="space-y-4">
+            <form onSubmit={handleCreateEvent} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-stone-700 mb-1">Title</label>
                 <input
                   type="text"
                   required
-                  value={form.title}
-                  onChange={(e) => setForm({ ...form, title: e.target.value })}
+                  autoFocus
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
                   className="w-full border border-stone-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-700"
                   placeholder="e.g. Board game night"
                 />
               </div>
-
-              <div>
-                <label className="block text-sm font-medium text-stone-700 mb-1">Type</label>
-                <div className="flex gap-3">
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="radio"
-                      name="category"
-                      value="event"
-                      checked={form.category === 'event'}
-                      onChange={(e) => setForm({ ...form, category: e.target.value })}
-                    />
-                    Group Event
-                  </label>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="radio"
-                      name="category"
-                      value="availability"
-                      checked={form.category === 'availability'}
-                      onChange={(e) => setForm({ ...form, category: e.target.value })}
-                    />
-                    My Availability
-                  </label>
-                </div>
-              </div>
-
-              <p className="text-xs text-stone-500">Posting as <span className="font-medium">{profile.username}</span></p>
-
               <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={closeModal}
-                  className="px-4 py-2 text-sm rounded-md bg-stone-100 hover:bg-stone-200 transition"
-                >
+                <button type="button" onClick={closeCreateModal} className="px-4 py-2 text-sm rounded-md bg-stone-100 hover:bg-stone-200 transition">
                   Cancel
                 </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 text-sm rounded-md bg-emerald-800 text-white hover:bg-emerald-900 transition"
-                >
-                  Save
+                <button type="submit" className="px-4 py-2 text-sm rounded-md bg-emerald-800 text-white hover:bg-emerald-900 transition">
+                  Create
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {detailModalOpen && selectedEvent && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+            <h2 className="text-lg font-semibold text-stone-800 mb-1">{selectedEvent.title}</h2>
+            <p className="text-sm text-stone-500 mb-4">
+              {new Date(selectedEvent.event_date + 'T00:00:00').toLocaleDateString(undefined, { dateStyle: 'full' })}
+            </p>
+
+            <div className="flex gap-2 mb-4">
+              <button
+                onClick={() => handleSetRsvp('attending')}
+                className={`flex-1 px-3 py-2 text-sm rounded-md transition ${myStatus === 'attending' ? 'bg-emerald-800 text-white' : 'bg-stone-100 hover:bg-stone-200'}`}
+              >
+                Attending
+              </button>
+              <button
+                onClick={() => handleSetRsvp('declined')}
+                className={`flex-1 px-3 py-2 text-sm rounded-md transition ${myStatus === 'declined' ? 'bg-red-800 text-white' : 'bg-stone-100 hover:bg-stone-200'}`}
+              >
+                Can't go
+              </button>
+              {myStatus !== 'undecided' && (
+                <button onClick={handleClearRsvp} className="px-3 py-2 text-sm rounded-md bg-stone-50 hover:bg-stone-100 border border-stone-200 transition">
+                  Reset
+                </button>
+              )}
+            </div>
+
+            <div className="mb-4">
+              <p className="text-xs font-medium text-stone-500 mb-1">Attending ({attending.length})</p>
+              <p className="text-sm text-stone-700">
+                {attending.length ? attending.map((r) => usernameFor(r.user_id)).join(', ') : 'Nobody yet'}
+              </p>
+            </div>
+
+            <div className="mb-6">
+              <p className="text-xs font-medium text-stone-500 mb-1">Declined ({declined.length})</p>
+              <p className="text-sm text-stone-700">
+                {declined.length ? declined.map((r) => usernameFor(r.user_id)).join(', ') : 'Nobody'}
+              </p>
+            </div>
+
+            <div className="flex justify-between items-center">
+              {isEventOwner ? (
+                <button onClick={handleDeleteEvent} className="text-sm text-red-600 hover:text-red-800 transition">
+                  Delete event
+                </button>
+              ) : <span />}
+              <button onClick={closeDetailModal} className="px-4 py-2 text-sm rounded-md bg-stone-100 hover:bg-stone-200 transition">
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -397,27 +447,14 @@ function UsernameEditor({ username, onSave }) {
 
   if (!editing) {
     return (
-      <button
-        onClick={() => {
-          setValue(username)
-          setEditing(true)
-        }}
-        className="text-sm text-stone-600 hover:text-stone-900 transition underline decoration-dotted"
-      >
+      <button onClick={() => { setValue(username); setEditing(true) }} className="text-sm text-stone-600 hover:text-stone-900 transition underline decoration-dotted">
         {username}
       </button>
     )
   }
 
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault()
-        onSave(value)
-        setEditing(false)
-      }}
-      className="flex items-center gap-2"
-    >
+    <form onSubmit={(e) => { e.preventDefault(); onSave(value); setEditing(false) }} className="flex items-center gap-2">
       <input
         type="text"
         autoFocus
@@ -426,12 +463,8 @@ function UsernameEditor({ username, onSave }) {
         onChange={(e) => setValue(e.target.value)}
         className="text-sm border border-stone-300 rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-emerald-700"
       />
-      <button type="submit" className="text-sm px-2 py-1 rounded-md bg-emerald-800 text-white hover:bg-emerald-900 transition">
-        Save
-      </button>
-      <button type="button" onClick={() => setEditing(false)} className="text-sm px-2 py-1 rounded-md bg-stone-100 hover:bg-stone-200 transition">
-        Cancel
-      </button>
+      <button type="submit" className="text-sm px-2 py-1 rounded-md bg-emerald-800 text-white hover:bg-emerald-900 transition">Save</button>
+      <button type="button" onClick={() => setEditing(false)} className="text-sm px-2 py-1 rounded-md bg-stone-100 hover:bg-stone-200 transition">Cancel</button>
     </form>
   )
 }
@@ -440,51 +473,22 @@ function BrainrotWidget() {
   const [videoKey, setVideoKey] = useState('subway')
   const [minimized, setMinimized] = useState(false)
 
-  const VIDEOS = {
-    subway: 'eRXE8Aebp7s',
-    familyguy: 'pLSy_xMBKHY',
-    rickmorty: 'VBZ-_ICc4dQ',
-  }
-
-  const LABELS = {
-    subway: 'Subway Surfers',
-    familyguy: 'Family Guy',
-    rickmorty: 'Rick and Morty',
-  }
-
+  const VIDEOS = { subway: 'eRXE8Aebp7s', familyguy: 'pLSy_xMBKHY', rickmorty: 'VBZ-_ICc4dQ' }
+  const LABELS = { subway: 'Subway Surfers', familyguy: 'Family Guy', rickmorty: 'Rick and Morty' }
   const embedSrc = `https://www.youtube.com/embed/${VIDEOS[videoKey]}?autoplay=1&mute=1&loop=1&playlist=${VIDEOS[videoKey]}&controls=1`
 
   return (
     <div className="fixed bottom-4 right-4 z-40 flex flex-col items-end gap-2">
       {!minimized && (
         <div className="bg-black rounded-lg shadow-xl overflow-hidden border border-stone-300" style={{ width: 320, height: 180 }}>
-          <iframe
-            key={videoKey}
-            width="320"
-            height="180"
-            src={embedSrc}
-            title="Background video"
-            frameBorder="0"
-            allow="autoplay; encrypted-media"
-            allowFullScreen
-          />
+          <iframe key={videoKey} width="320" height="180" src={embedSrc} title="Background video" frameBorder="0" allow="autoplay; encrypted-media" allowFullScreen />
         </div>
       )}
-
       <div className="bg-white rounded-md shadow-md border border-stone-200 px-2 py-1.5 flex items-center gap-2">
-        <select
-          value={videoKey}
-          onChange={(e) => setVideoKey(e.target.value)}
-          className="text-xs border border-stone-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-emerald-700"
-        >
-          {Object.keys(VIDEOS).map((key) => (
-            <option key={key} value={key}>{LABELS[key]}</option>
-          ))}
+        <select value={videoKey} onChange={(e) => setVideoKey(e.target.value)} className="text-xs border border-stone-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-emerald-700">
+          {Object.keys(VIDEOS).map((key) => <option key={key} value={key}>{LABELS[key]}</option>)}
         </select>
-        <button
-          onClick={() => setMinimized((m) => !m)}
-          className="text-xs px-2 py-1 rounded bg-stone-100 hover:bg-stone-200 transition"
-        >
+        <button onClick={() => setMinimized((m) => !m)} className="text-xs px-2 py-1 rounded bg-stone-100 hover:bg-stone-200 transition">
           {minimized ? 'Show' : 'Hide'}
         </button>
       </div>
