@@ -4,7 +4,7 @@ import dayGridPlugin from '@fullcalendar/daygrid'
 import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import { supabase } from './lib/supabase'
-import MySchedule, { getFifoStatusForDate, matchesRecurringRule } from './MySchedule'
+import MySchedule, { getFifoStatusForDate, getFifoAwayHomeStatus, matchesRecurringRule, isDateBlocked } from './MySchedule'
 
 const STATUS_COLORS = {
   attending: { bg: '#2d4a3a', border: '#1f3428' },
@@ -20,6 +20,7 @@ const FIFO_COLORS = {
 }
 
 const CHANGELOG = [
+  { date: '2026-08-23', text: 'FIFO rosters now use whole-week cycles so fly-out/fly-in always lands on the same weekday. Added holiday date blocking and bulk roster clearing.' },
   { date: '2026-08-23', text: 'Added recurring weekly unavailability and FIFO roster scheduling.' },
   { date: '2026-08-23', text: 'Added multi-device account recovery via recovery codes.' },
   { date: '2026-08-23', text: 'Added user list, event creator visibility, admin moderation, and this changelog.' },
@@ -48,6 +49,7 @@ export default function App() {
   const [rsvps, setRsvps] = useState([])
   const [recurringRules, setRecurringRules] = useState([])
   const [fifoRosters, setFifoRosters] = useState([])
+  const [scheduleOverrides, setScheduleOverrides] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -165,12 +167,13 @@ export default function App() {
     if (!profile) return
     setLoading(true)
 
-    const [eventsRes, rsvpsRes, profilesRes, recurringRes, rosterRes] = await Promise.all([
+    const [eventsRes, rsvpsRes, profilesRes, recurringRes, rosterRes, overrideRes] = await Promise.all([
       supabase.from('events').select('*').order('event_date', { ascending: true }),
       supabase.from('rsvps').select('*'),
       supabase.from('profiles').select('*'),
       supabase.from('recurring_unavailability').select('*'),
       supabase.from('fifo_rosters').select('*').eq('active', true),
+      supabase.from('schedule_overrides').select('*'),
     ])
 
     if (eventsRes.error) setError(eventsRes.error.message)
@@ -188,6 +191,9 @@ export default function App() {
     if (rosterRes.error) setError(rosterRes.error.message)
     else setFifoRosters(rosterRes.data)
 
+    if (overrideRes.error) setError(overrideRes.error.message)
+    else setScheduleOverrides(overrideRes.data)
+
     setLoading(false)
   }, [profile])
 
@@ -204,6 +210,7 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => fetchAll())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'recurring_unavailability' }, () => fetchAll())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'fifo_rosters' }, () => fetchAll())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'schedule_overrides' }, () => fetchAll())
       .subscribe()
 
     return () => supabase.removeChannel(channel)
@@ -343,6 +350,7 @@ export default function App() {
     const dateStr = d.toISOString().split('T')[0]
 
     recurringRules.forEach((rule) => {
+      if (isDateBlocked(scheduleOverrides, rule.user_id, dateStr)) return
       if (matchesRecurringRule(rule, dateStr)) {
         scheduleCalendarItems.push({
           id: `rec-${rule.id}-${dateStr}`,
@@ -357,18 +365,34 @@ export default function App() {
     })
 
     fifoRosters.forEach((roster) => {
-      const status = getFifoStatusForDate(roster, dateStr)
-      if (status) {
-        const labels = { 'fly-out': 'Flies out', 'fly-in': 'Flies in', away: 'Away', home: 'Home' }
+      if (isDateBlocked(scheduleOverrides, roster.user_id, dateStr)) return
+
+      const flyStatus = getFifoStatusForDate(roster, dateStr)
+      const labels = { 'fly-out': 'Flies out', 'fly-in': 'Flies in', away: 'Away', home: 'Home' }
+
+      if (flyStatus) {
         scheduleCalendarItems.push({
           id: `fifo-${roster.id}-${dateStr}`,
-          title: `${labels[status]} (${usernameFor(roster.user_id)})`,
+          title: `${labels[flyStatus]} (${usernameFor(roster.user_id)})`,
           start: dateStr,
           allDay: true,
-          backgroundColor: FIFO_COLORS[status].bg,
-          borderColor: FIFO_COLORS[status].border,
+          backgroundColor: FIFO_COLORS[flyStatus].bg,
+          borderColor: FIFO_COLORS[flyStatus].border,
           extendedProps: { isSchedule: true },
         })
+      } else {
+        const awayHomeStatus = getFifoAwayHomeStatus(roster, dateStr)
+        if (awayHomeStatus) {
+          scheduleCalendarItems.push({
+            id: `fifo-${roster.id}-${dateStr}`,
+            title: `${labels[awayHomeStatus]} (${usernameFor(roster.user_id)})`,
+            start: dateStr,
+            allDay: true,
+            backgroundColor: FIFO_COLORS[awayHomeStatus].bg,
+            borderColor: FIFO_COLORS[awayHomeStatus].border,
+            extendedProps: { isSchedule: true },
+          })
+        }
       }
     })
   }
