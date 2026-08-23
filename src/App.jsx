@@ -18,6 +18,7 @@ const BLOCK_COLORS = {
 }
 
 const CHANGELOG = [
+  { date: '2026-08-23', text: 'Added shared-passphrase account recovery for lost codes, and an admin tool to merge duplicate accounts.' },
   { date: '2026-08-23', text: 'New events now automatically post to Discord with the event details and @-mention a role, via a Supabase Edge Function webhook.' },
   { date: '2026-08-23', text: 'Fixed sign-up bug where new users could not create a profile due to a missing recovery code.' },
   { date: '2026-08-23', text: 'Replaced FIFO rosters with a unified schedule blocks system: mark unavailable/available for a single day, date range, or recurring weekday, all-day by default or with specific times.' },
@@ -42,6 +43,11 @@ export default function App() {
   const [recoveryInput, setRecoveryInput] = useState('')
   const [recoveryError, setRecoveryError] = useState(null)
 
+  const [showPassphraseRecovery, setShowPassphraseRecovery] = useState(false)
+  const [recoverUsername, setRecoverUsername] = useState('')
+  const [recoverPassphrase, setRecoverPassphrase] = useState('')
+  const [recoverError, setRecoverError] = useState(null)
+
   const [newRecoveryCode, setNewRecoveryCode] = useState(null)
   const [showNewCodeModal, setShowNewCodeModal] = useState(false)
 
@@ -63,6 +69,11 @@ export default function App() {
   const [changelogOpen, setChangelogOpen] = useState(false)
   const [myCodeModalOpen, setMyCodeModalOpen] = useState(false)
   const [myScheduleOpen, setMyScheduleOpen] = useState(false)
+
+  const [mergePrimaryId, setMergePrimaryId] = useState('')
+  const [mergeDuplicateId, setMergeDuplicateId] = useState('')
+  const [mergeError, setMergeError] = useState(null)
+  const [mergeBusy, setMergeBusy] = useState(false)
 
   useEffect(() => {
     const init = async () => {
@@ -157,6 +168,39 @@ export default function App() {
     }
 
     setProfile(data)
+    setShowRecovery(false)
+  }
+
+  const handleRecoverByPassphrase = async (e) => {
+    e.preventDefault()
+    setRecoverError(null)
+    const trimmedUsername = recoverUsername.trim()
+    const trimmedPassphrase = recoverPassphrase.trim()
+    if (!trimmedUsername || !trimmedPassphrase) {
+      setRecoverError('Enter your username and the group passphrase.')
+      return
+    }
+
+    const { data, error: rpcError } = await supabase.rpc('recover_account_by_passphrase', {
+      input_username: trimmedUsername,
+      input_passphrase: trimmedPassphrase,
+    })
+
+    if (rpcError) {
+      setRecoverError(
+        rpcError.message.includes('Invalid passphrase')
+          ? 'Incorrect passphrase.'
+          : rpcError.message.includes('No account found')
+          ? 'No account found with that username.'
+          : rpcError.message
+      )
+      return
+    }
+
+    setProfile(data)
+    setNewRecoveryCode(data.recovery_code)
+    setShowNewCodeModal(true)
+    setShowPassphraseRecovery(false)
     setShowRecovery(false)
   }
 
@@ -333,6 +377,41 @@ export default function App() {
     return p ? p.username : 'Unknown'
   }
 
+  const handleMergeProfiles = async () => {
+    setMergeError(null)
+    if (!mergePrimaryId || !mergeDuplicateId) {
+      setMergeError('Choose both a primary and a duplicate account.')
+      return
+    }
+    if (mergePrimaryId === mergeDuplicateId) {
+      setMergeError('Primary and duplicate must be different accounts.')
+      return
+    }
+
+    const primaryName = usernameFor(mergePrimaryId)
+    const duplicateName = usernameFor(mergeDuplicateId)
+    const confirmMerge = window.confirm(
+      `Merge "${duplicateName}" into "${primaryName}"? All events, RSVPs, and schedule blocks from "${duplicateName}" will move to "${primaryName}", and "${duplicateName}" will be deleted. This cannot be undone.`
+    )
+    if (!confirmMerge) return
+
+    setMergeBusy(true)
+    const { error: mergeErr } = await supabase.rpc('merge_duplicate_profile', {
+      primary_profile_id: mergePrimaryId,
+      duplicate_profile_id: mergeDuplicateId,
+    })
+    setMergeBusy(false)
+
+    if (mergeErr) {
+      setMergeError(mergeErr.message)
+      return
+    }
+
+    setMergePrimaryId('')
+    setMergeDuplicateId('')
+    fetchAll()
+  }
+
   const eventCalendarItems = events.map((ev) => {
     const status = statusFor(ev.id)
     return {
@@ -387,7 +466,7 @@ export default function App() {
     return (
       <div className="min-h-screen bg-stone-100 flex items-center justify-center p-4">
         <div className="bg-white rounded-xl shadow-sm border border-stone-200 p-8 w-full max-w-sm">
-          {!showRecovery ? (
+          {!showRecovery && !showPassphraseRecovery ? (
             <>
               <h1 className="text-xl font-bold text-stone-800 mb-1">Pick a username</h1>
               <p className="text-sm text-stone-500 mb-6">This is how your friends will see you. You can change it anytime.</p>
@@ -413,8 +492,14 @@ export default function App() {
               >
                 Already have an account? Enter your recovery code
               </button>
+              <button
+                onClick={() => { setShowPassphraseRecovery(true); setRecoverError(null) }}
+                className="w-full text-center text-xs text-stone-500 hover:text-stone-700 underline mt-2 transition"
+              >
+                Forgot your code?
+              </button>
             </>
-          ) : (
+          ) : showRecovery ? (
             <>
               <h1 className="text-xl font-bold text-stone-800 mb-1">Enter recovery code</h1>
               <p className="text-sm text-stone-500 mb-6">Use the code you saved when you first created your account.</p>
@@ -439,6 +524,50 @@ export default function App() {
                 className="w-full text-center text-xs text-stone-500 hover:text-stone-700 underline mt-4 transition"
               >
                 New here? Pick a username instead
+              </button>
+              <button
+                onClick={() => { setShowRecovery(false); setShowPassphraseRecovery(true); setRecoverError(null) }}
+                className="w-full text-center text-xs text-stone-500 hover:text-stone-700 underline mt-2 transition"
+              >
+                Forgot your code?
+              </button>
+            </>
+          ) : (
+            <>
+              <h1 className="text-xl font-bold text-stone-800 mb-1">Forgot your code?</h1>
+              <p className="text-sm text-stone-500 mb-6">
+                Enter your username and the group passphrase to get a new recovery code for your account.
+              </p>
+              <form onSubmit={handleRecoverByPassphrase}>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  maxLength={24}
+                  value={recoverUsername}
+                  onChange={(e) => setRecoverUsername(e.target.value)}
+                  placeholder="Your username"
+                  className="w-full border border-stone-300 rounded-md px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-emerald-700"
+                />
+                <input
+                  type="password"
+                  required
+                  maxLength={32}
+                  value={recoverPassphrase}
+                  onChange={(e) => setRecoverPassphrase(e.target.value)}
+                  placeholder="Group passphrase"
+                  className="w-full border border-stone-300 rounded-md px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-emerald-700"
+                />
+                {recoverError && <p className="text-sm text-red-600 mb-3">{recoverError}</p>}
+                <button type="submit" className="w-full bg-emerald-800 text-white text-sm font-medium py-2 rounded-md hover:bg-emerald-900 transition">
+                  Recover my account
+                </button>
+              </form>
+              <button
+                onClick={() => { setShowPassphraseRecovery(false); setRecoverError(null) }}
+                className="w-full text-center text-xs text-stone-500 hover:text-stone-700 underline mt-4 transition"
+              >
+                Back
               </button>
             </>
           )}
@@ -634,9 +763,9 @@ export default function App() {
 
       {usersModalOpen && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 max-h-[85vh] overflow-y-auto">
             <h2 className="text-lg font-semibold text-stone-800 mb-4">Users ({profiles.length})</h2>
-            <ul className="space-y-2 max-h-80 overflow-y-auto">
+            <ul className="space-y-2 max-h-64 overflow-y-auto mb-4">
               {profiles.map((p) => (
                 <li key={p.id} className="flex items-center justify-between text-sm text-stone-700 border-b border-stone-100 pb-2">
                   <span>{p.username}</span>
@@ -644,7 +773,53 @@ export default function App() {
                 </li>
               ))}
             </ul>
-            <div className="flex justify-end pt-4">
+
+            {isAdmin && (
+              <div className="border-t border-stone-200 pt-4 mb-4">
+                <h3 className="text-sm font-semibold text-stone-800 mb-1">Merge duplicate accounts</h3>
+                <p className="text-xs text-stone-500 mb-3">
+                  Moves all events, RSVPs, and schedule blocks from the duplicate into the primary account, then deletes the duplicate.
+                </p>
+                <div className="space-y-2">
+                  <div>
+                    <label className="block text-xs font-medium text-stone-600 mb-1">Primary account (keep this one)</label>
+                    <select
+                      value={mergePrimaryId}
+                      onChange={(e) => setMergePrimaryId(e.target.value)}
+                      className="w-full border border-stone-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-700"
+                    >
+                      <option value="">Select primary account</option>
+                      {profiles.map((p) => (
+                        <option key={p.id} value={p.id}>{p.username}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-stone-600 mb-1">Duplicate account (will be deleted)</label>
+                    <select
+                      value={mergeDuplicateId}
+                      onChange={(e) => setMergeDuplicateId(e.target.value)}
+                      className="w-full border border-stone-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-700"
+                    >
+                      <option value="">Select duplicate account</option>
+                      {profiles.map((p) => (
+                        <option key={p.id} value={p.id}>{p.username}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {mergeError && <p className="text-sm text-red-600">{mergeError}</p>}
+                  <button
+                    onClick={handleMergeProfiles}
+                    disabled={mergeBusy}
+                    className="w-full bg-red-700 text-white text-sm font-medium py-2 rounded-md hover:bg-red-800 transition disabled:opacity-50"
+                  >
+                    {mergeBusy ? 'Merging...' : 'Merge accounts'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end pt-2">
               <button onClick={() => setUsersModalOpen(false)} className="px-4 py-2 text-sm rounded-md bg-stone-100 hover:bg-stone-200 transition">
                 Close
               </button>
