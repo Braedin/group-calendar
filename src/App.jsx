@@ -18,6 +18,8 @@ const BLOCK_COLORS = {
 }
 
 const CHANGELOG = [
+  { date: '2026-08-23', text: 'Admins can now view every user\'s current recovery code from the Users list.' },
+  { date: '2026-08-23', text: 'Admin account recovery now requires a separate passphrase from the group passphrase.' },
   { date: '2026-08-23', text: 'Added shared-passphrase account recovery for lost codes, and an admin tool to merge duplicate accounts.' },
   { date: '2026-08-23', text: 'New events now automatically post to Discord with the event details and @-mention a role, via a Supabase Edge Function webhook.' },
   { date: '2026-08-23', text: 'Fixed sign-up bug where new users could not create a profile due to a missing recovery code.' },
@@ -74,6 +76,10 @@ export default function App() {
   const [mergeDuplicateId, setMergeDuplicateId] = useState('')
   const [mergeError, setMergeError] = useState(null)
   const [mergeBusy, setMergeBusy] = useState(false)
+
+  const [recoveryCodes, setRecoveryCodes] = useState(null)
+  const [recoveryCodesError, setRecoveryCodesError] = useState(null)
+  const [recoveryCodesLoading, setRecoveryCodesLoading] = useState(false)
 
   useEffect(() => {
     const init = async () => {
@@ -410,6 +416,19 @@ export default function App() {
     setMergePrimaryId('')
     setMergeDuplicateId('')
     fetchAll()
+  }
+
+  const handleLoadRecoveryCodes = async () => {
+    setRecoveryCodesError(null)
+    setRecoveryCodesLoading(true)
+    const { data, error: rpcError } = await supabase.rpc('admin_list_recovery_codes')
+    setRecoveryCodesLoading(false)
+
+    if (rpcError) {
+      setRecoveryCodesError(rpcError.message)
+      return
+    }
+    setRecoveryCodes(data)
   }
 
   const eventCalendarItems = events.map((ev) => {
@@ -776,6 +795,31 @@ export default function App() {
 
             {isAdmin && (
               <div className="border-t border-stone-200 pt-4 mb-4">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-semibold text-stone-800">Recovery codes</h3>
+                  <button
+                    onClick={recoveryCodes ? () => setRecoveryCodes(null) : handleLoadRecoveryCodes}
+                    className="text-xs px-2 py-1 rounded-md bg-stone-100 hover:bg-stone-200 transition"
+                  >
+                    {recoveryCodesLoading ? 'Loading...' : recoveryCodes ? 'Hide' : 'Show recovery codes'}
+                  </button>
+                </div>
+                {recoveryCodesError && <p className="text-sm text-red-600 mb-2">{recoveryCodesError}</p>}
+                {recoveryCodes && (
+                  <ul className="space-y-1 max-h-48 overflow-y-auto border border-stone-200 rounded-md p-2">
+                    {recoveryCodes.map((r) => (
+                      <li key={r.id} className="flex items-center justify-between text-xs text-stone-700">
+                        <span>{r.username}{r.is_admin ? ' (admin)' : ''}</span>
+                        <span className="font-mono tracking-wider select-all">{r.recovery_code}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            {isAdmin && (
+              <div className="border-t border-stone-200 pt-4 mb-4">
                 <h3 className="text-sm font-semibold text-stone-800 mb-1">Merge duplicate accounts</h3>
                 <p className="text-xs text-stone-500 mb-3">
                   Moves all events, RSVPs, and schedule blocks from the duplicate into the primary account, then deletes the duplicate.
@@ -820,7 +864,10 @@ export default function App() {
             )}
 
             <div className="flex justify-end pt-2">
-              <button onClick={() => setUsersModalOpen(false)} className="px-4 py-2 text-sm rounded-md bg-stone-100 hover:bg-stone-200 transition">
+              <button
+                onClick={() => { setUsersModalOpen(false); setRecoveryCodes(null); setRecoveryCodesError(null) }}
+                className="px-4 py-2 text-sm rounded-md bg-stone-100 hover:bg-stone-200 transition"
+              >
                 Close
               </button>
             </div>
